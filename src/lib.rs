@@ -34,27 +34,56 @@ use pcap::Interface;
 use pcap::{HardwareAddr, Receiver, Sender};
 use tcp::{TcpRxState, TcpTxState};
 
+pub fn is_alias_legit(alias:&str) -> bool {
+    if alias.contains("Tunnel") ||alias.contains("Wintun") ||alias.contains("HyperV") ||alias.contains("WireGuard") ||alias.contains("Tun") || alias.contains("Tap") || alias.contains("VMware") || alias.contains("Virtual") {
+        false
+    }
+    else{
+        true
+    }
+    
+}
+
+pub fn is_ip_addr_legit(ip_addr:Ipv4Addr) -> bool {
+
+    let ip_octets = ip_addr.octets();
+    if ip_octets[0]==169 && ip_octets[1]==254{
+        false
+    }
+    else{
+        true
+    }
+    
+    
+}
 /// Gets a list of available network interfaces for the current machine.
 pub fn interfaces() -> Vec<Interface> {
     pcap::interfaces()
         .into_iter()
-        .filter(|inter| inter.is_up() && !inter.is_loopback())
+        .filter(|inter| inter.is_up() && !inter.is_loopback() && is_alias_legit(inter.alias().as_deref().unwrap()) && is_ip_addr_legit(inter.ip_addr().unwrap()))
         .collect()
 }
 
 /// Gets an available network interface.
 pub fn interface(name: Option<String>) -> Option<Interface> {
     let mut inters = match name {
+        
         Some(ref name) => {
             let mut inters = interfaces();
-            inters.retain(|ref inter| inter.name() == name);
+
+            inters.retain(|ref inter| inter.name() == name );
 
             inters
         }
         None => interfaces(),
     };
 
-    if inters.len() != 1 {
+    // if inters.len() != 1 {
+    //     None
+    // } else {
+    //     Some(inters.pop().unwrap())
+    // }
+    if inters.len() == 0 {
         None
     } else {
         Some(inters.pop().unwrap())

@@ -1,7 +1,7 @@
 [package]
-name = "pcap2socks"
-version = "0.6.1"
-authors = ["Xie Zhihao <xzh1206@gmail.com>"]
+name = "console"
+version = "0.6.3"
+authors = ["Xie Zhihao <xzh1206@gmail.com>,Terryops <terryops@qq.com>"]
 edition = "2018"
 description = "Redirect traffic to SOCKS proxy with pcap."
 readme = "README.md"

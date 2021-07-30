@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 
-use pcap2socks::{self as lib, Forwarder, ProxyConfig, Redirector};
+use console::{self as lib, Forwarder, ProxyConfig, Redirector};
 
 #[tokio::main]
 async fn main() {
@@ -21,6 +21,7 @@ async fn main() {
 
     // Interface
     let inter = match lib::interface(flags.inter) {
+        
         Some(inter) => inter,
         None => {
             error!("Cannot determine the interface. Available interfaces are listed below, and please use -i <INTERFACE> to designate:");
@@ -171,13 +172,13 @@ fn show_info(src: Ipv4Network, gw: Ipv4Addr, mtu: usize) {
         mtu_str.len()
     );
     info!("Please set the network of your device which is going to be proxied with the following parameters:");
-    info!("    ┌─────────────{:─>w$}─┐", "", w = width);
-    info!("    │ IP Address  {:>w$} │", src_str, w = width);
+    info!("    ┌------------{:─>w$}─┐", "", w = width);
+    info!("    | IP Address  {:>w$} │", src_str, w = width);
     info!("    │ Mask        {:>w$} │", mask, w = width);
     info!("    │ Gateway     {:>w$} │", gw, w = width);
-    info!("    │─────────────{:─>w$}─│", "", w = width);
+    info!("    │-------------{:─>w$}│", "", w = width);
     info!("    │ MTU         {:>w$} │", mtu_str, w = width);
-    info!("    └─────────────{:─>w$}─┘", "", w = width);
+    info!("    └-------------{:─>w$}┘", "", w = width);
     if mask == Ipv4Addr::UNSPECIFIED {
         warn!("The mask is all zeros, which may cause potential problems");
     }

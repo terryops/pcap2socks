@@ -6,6 +6,7 @@ use ipnetwork::Ipv4Network;
 use log::{debug, info, trace, warn};
 use lru::LruCache;
 use rand::{self, Rng};
+use stat::Traffic;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4};
@@ -18,6 +19,7 @@ use tokio::io;
 pub mod packet;
 pub mod pcap;
 pub mod proxy;
+pub mod stat;
 pub mod tcp;
 
 pub use self::proxy::ProxyConfig;
@@ -122,8 +124,8 @@ pub struct Forwarder {
     local_ip_addr: Ipv4Addr,
     ipv4_identification_map: HashMap<(Ipv4Addr, Ipv4Addr), u16>,
     states: HashMap<(SocketAddrV4, SocketAddrV4), TcpTxState>,
-    traffic: Option<Arc<AtomicUsize>>,
-    count: Option<Arc<AtomicUsize>>,
+    traffic_size: Option<Arc<AtomicUsize>>,
+    traffic_count: Option<Arc<AtomicUsize>>,
 }
 
 impl Forwarder {
@@ -134,7 +136,7 @@ impl Forwarder {
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
     ) -> Forwarder {
-        Forwarder::new_monitored(tx, mtu, local_hardware_addr, local_ip_addr, None, None)
+        Forwarder::new_monitored(tx, mtu, local_hardware_addr, local_ip_addr, None)
     }
 
     /// Creates a new `Forwarder` which is monitored.
@@ -143,9 +145,16 @@ impl Forwarder {
         mtu: usize,
         local_hardware_addr: HardwareAddr,
         local_ip_addr: Ipv4Addr,
-        traffic: Option<Arc<AtomicUsize>>,
-        count: Option<Arc<AtomicUsize>>,
+        traffic: Option<Traffic>,
     ) -> Forwarder {
+        let size = match &traffic {
+            Some(traffic) => Some(traffic.size()),
+            None => None,
+        };
+        let count = match &traffic {
+            Some(traffic) => Some(traffic.count()),
+            None => None,
+        };
         Forwarder {
             tx,
             src_mtu_map: HashMap::new(),
@@ -155,8 +164,8 @@ impl Forwarder {
             local_ip_addr,
             ipv4_identification_map: HashMap::new(),
             states: HashMap::new(),
-            traffic,
-            count,
+            traffic_size: size,
+            traffic_count: count,
         }
     }
 
@@ -1033,10 +1042,10 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(traffic) = &self.traffic {
-            traffic.fetch_add(buffer_size, Ordering::Relaxed);
+        if let Some(size) = &self.traffic_size {
+            size.fetch_add(buffer_size, Ordering::Relaxed);
         }
-        if let Some(count) = &self.count {
+        if let Some(count) = &self.traffic_count {
             count.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -1068,10 +1077,10 @@ impl Forwarder {
         }
 
         // Monitor
-        if let Some(download) = &self.traffic {
-            download.fetch_add(buffer_size, Ordering::Relaxed);
+        if let Some(size) = &self.traffic_size {
+            size.fetch_add(buffer_size, Ordering::Relaxed);
         }
-        if let Some(count) = &self.count {
+        if let Some(count) = &self.traffic_count {
             count.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -1213,6 +1222,8 @@ pub struct Redirector {
     /// Represents the LRU mapping a local port to a source port.
     udp_lru: LruCache<u16, SocketAddrV4>,
     defrag: Defraggler,
+    traffic_size: Option<Arc<AtomicUsize>>,
+    traffic_count: Option<Arc<AtomicUsize>>,
 }
 
 impl Redirector {
@@ -1223,7 +1234,16 @@ impl Redirector {
         local_ip_addr: Ipv4Addr,
         gw_ip_addr: Option<Ipv4Addr>,
         proxy: ProxyConfig,
+        traffic: Option<Traffic>,
     ) -> Redirector {
+        let size = match &traffic {
+            Some(traffic) => Some(traffic.size()),
+            None => None,
+        };
+        let count = match &traffic {
+            Some(traffic) => Some(traffic.count()),
+            None => None,
+        };
         let redirector = Redirector {
             tx,
             tx_src_hardware_addr_set_ip_addr_set: HashSet::new(),
@@ -1237,6 +1257,8 @@ impl Redirector {
             datagram_map: HashMap::new(),
             udp_lru: LruCache::new(MAX_UDP_PORT),
             defrag: Defraggler::new(),
+            traffic_size: size,
+            traffic_count: count,
         };
         if let Some(gw_ip_addr) = gw_ip_addr {
             redirector.tx.lock().unwrap().set_local_ip_addr(gw_ip_addr);
@@ -1247,7 +1269,7 @@ impl Redirector {
 
     /// Opens an `Interface` for redirection.
     pub async fn open(&mut self, rx: &mut Receiver) -> io::Result<()> {
-        self.open_monitored(rx, None, None, None).await
+        self.open_monitored(rx, None).await
     }
 
     /// Opens an `Interface` for redirection and monitoring.
@@ -1255,8 +1277,6 @@ impl Redirector {
         &mut self,
         rx: &mut Receiver,
         is_running: Option<Arc<AtomicBool>>,
-        traffic: Option<Arc<AtomicUsize>>,
-        count: Option<Arc<AtomicUsize>>,
     ) -> io::Result<()> {
         // Send gratuitous ARP
         if self.gw_ip_addr.is_some() {
@@ -1274,24 +1294,14 @@ impl Redirector {
                 Ok(frame) => {
                     if let Some(ref indicator) = Indicator::from(frame) {
                         if let Some(t) = indicator.network_kind() {
-                            let traffic = match &traffic {
-                                Some(traffic) => Some(Arc::clone(traffic)),
-                                None => None,
-                            };
-                            let count = match &count {
-                                Some(count) => Some(Arc::clone(count)),
-                                None => None,
-                            };
                             match t {
                                 LayerKinds::Arp => {
-                                    if let Err(ref e) = self.handle_arp(indicator, traffic, count) {
+                                    if let Err(ref e) = self.handle_arp(indicator) {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
                                 LayerKinds::Ipv4 => {
-                                    if let Err(ref e) =
-                                        self.handle_ipv4(indicator, frame, traffic, count).await
-                                    {
+                                    if let Err(ref e) = self.handle_ipv4(indicator, frame).await {
                                         warn!("handle {}: {}", indicator.brief(), e);
                                     }
                                 }
@@ -1311,12 +1321,7 @@ impl Redirector {
         }
     }
 
-    fn handle_arp(
-        &mut self,
-        indicator: &Indicator,
-        traffic: Option<Arc<AtomicUsize>>,
-        count: Option<Arc<AtomicUsize>>,
-    ) -> io::Result<()> {
+    fn handle_arp(&mut self, indicator: &Indicator) -> io::Result<()> {
         if let Some(gw_ip_addr) = self.gw_ip_addr {
             if let Some(arp) = indicator.arp() {
                 let src = arp.src();
@@ -1338,10 +1343,10 @@ impl Redirector {
                     self.tx.lock().unwrap().send_arp_reply(src)?;
 
                     // Monitor
-                    if let Some(traffic) = traffic {
-                        traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                    if let Some(size) = &self.traffic_size {
+                        size.fetch_add(indicator.content_len(), Ordering::Relaxed);
                     }
-                    if let Some(count) = count {
+                    if let Some(count) = &self.traffic_count {
                         count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -1351,13 +1356,7 @@ impl Redirector {
         Ok(())
     }
 
-    async fn handle_ipv4(
-        &mut self,
-        indicator: &Indicator,
-        frame: &[u8],
-        traffic: Option<Arc<AtomicUsize>>,
-        count: Option<Arc<AtomicUsize>>,
-    ) -> io::Result<()> {
+    async fn handle_ipv4(&mut self, indicator: &Indicator, frame: &[u8]) -> io::Result<()> {
         if let Some(ipv4) = indicator.ipv4() {
             let src = ipv4.src();
             if src != self.local_ip_addr && self.src_ip_addr.contains(src) {
@@ -1406,10 +1405,10 @@ impl Redirector {
                 }
 
                 // Monitor
-                if let Some(traffic) = traffic {
-                    traffic.fetch_add(indicator.content_len(), Ordering::Relaxed);
+                if let Some(size) = &self.traffic_size {
+                    size.fetch_add(indicator.content_len(), Ordering::Relaxed);
                 }
-                if let Some(count) = count {
+                if let Some(count) = &self.traffic_count {
                     count.fetch_add(1, Ordering::Relaxed);
                 }
             }

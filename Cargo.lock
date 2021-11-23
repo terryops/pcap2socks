@@ -132,15 +132,15 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-socks5",
  "clap",
  "dns-lookup",
  "env_logger",
  "interfaces",
- "ipnetwork 0.17.0",
- "log 0.4.11",
+ "ipnetwork 0.18.0",
+ "log 0.4.14",
  "lru",
  "netifs",
  "pnet",
@@ -415,25 +415,6 @@ name = "once_cell"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "692fcb63b64b1758029e0a96ee63e049ce8c5948587f2f7208df04625e5f6b56"
-
-[[package]]
-name = "pcap2socks"
-version = "0.6.2"
-dependencies = [
- "async-socks5",
- "clap",
- "dns-lookup",
- "env_logger",
- "interfaces",
- "ipnetwork 0.18.0",
- "log 0.4.14",
- "lru",
- "netifs",
- "pnet",
- "rand",
- "structopt",
- "tokio",
-]
 
 [[package]]
 name = "pest"

@@ -37,7 +37,8 @@ use pcap::{HardwareAddr, Receiver, Sender};
 use tcp::{TcpRxState, TcpTxState};
 
 pub fn is_alias_legit(alias:&str) -> bool {
-    if alias.contains("Tunnel") ||alias.contains("Wintun") ||alias.contains("HyperV") ||alias.contains("WireGuard") ||alias.contains("Tun") || alias.contains("Tap") || alias.contains("VMware") || alias.contains("Virtual") {
+    if alias.contains("Tunnel") ||alias.contains("Wintun") ||alias.contains("HyperV") ||alias.contains("WireGuard") ||alias.contains("Tun") ||
+         alias.contains("Tap") || alias.contains("VMware") || alias.contains("Virtual") || alias.contains("bridge")||alias.contains("tun") {
         false
     }
     else{
@@ -62,7 +63,9 @@ pub fn is_ip_addr_legit(ip_addr:Ipv4Addr) -> bool {
 pub fn interfaces() -> Vec<Interface> {
     pcap::interfaces()
         .into_iter()
-        .filter(|inter| inter.is_up() && !inter.is_loopback() && is_alias_legit(inter.alias().as_deref().unwrap()) && is_ip_addr_legit(inter.ip_addr().unwrap()))
+        .filter(|inter| inter.is_up() && !inter.is_loopback() && 
+                is_alias_legit(inter.name()) && is_ip_addr_legit(inter.ip_addr().unwrap())
+                )
         .collect()
 }
 

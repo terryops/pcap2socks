@@ -75,8 +75,7 @@ pub fn interface(name: Option<String>) -> Option<Interface> {
         
         Some(ref name) => {
             let mut inters = interfaces();
-
-            inters.retain(|ref inter| inter.name() == name );
+            inters.retain(|inter| inter.name() == name);
 
             inters
         }
@@ -131,6 +130,7 @@ pub struct Forwarder {
     traffic_count: Option<Arc<AtomicUsize>>,
 }
 
+#[allow(clippy::unnecessary_lazy_evaluations)]
 impl Forwarder {
     /// Creates a new `Forwarder`.
     pub fn new(
@@ -150,14 +150,8 @@ impl Forwarder {
         local_ip_addr: Ipv4Addr,
         traffic: Option<Traffic>,
     ) -> Forwarder {
-        let size = match &traffic {
-            Some(traffic) => Some(traffic.size()),
-            None => None,
-        };
-        let count = match &traffic {
-            Some(traffic) => Some(traffic.count()),
-            None => None,
-        };
+        let size = traffic.as_ref().map(|traffic| traffic.size());
+        let count = traffic.as_ref().map(|traffic| traffic.count());
         Forwarder {
             tx,
             src_mtu_map: HashMap::new(),
@@ -365,7 +359,7 @@ impl Forwarder {
         // Append to queue
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         state.append_queue(payload);
 
         self.send_tcp(dst, src)
@@ -380,7 +374,7 @@ impl Forwarder {
     ) -> io::Result<()> {
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let sequence = state.cache().sequence();
         let recv_next = state.cache().recv_next();
 
@@ -390,8 +384,7 @@ impl Forwarder {
         }
 
         // Find all disjointed ranges
-        let mut ranges = Vec::new();
-        ranges.push((sequence, recv_next));
+        let mut ranges = vec![(sequence, recv_next), ];
         if let Some(sacks) = sacks {
             for sack in sacks {
                 let mut temp_ranges = Vec::new();
@@ -415,9 +408,9 @@ impl Forwarder {
                 .unwrap_or_else(|| range.1 + (u32::MAX - range.0)) as usize;
             let state = self
                 .get_state(dst, src)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             let payload = state.cache().get(range.0, size)?;
-            if payload.len() > 0 {
+            if !payload.is_empty() {
                 if range.1 == recv_next && state.cache_fin().is_some() {
                     // ACK/FIN
                     trace!(
@@ -449,8 +442,8 @@ impl Forwarder {
         // Pure FIN
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-        if ranges.len() == 0 && state.cache_fin().is_some() {
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        if ranges.is_empty() && state.cache_fin().is_some() {
             // FIN
             trace!("retransmit TCP FIN {} -> {}", dst, src);
 
@@ -470,14 +463,14 @@ impl Forwarder {
     ) -> io::Result<()> {
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let next_rto = state.next_rto();
         let payload = state.cache_mut().get_timed_out_and_update(next_rto);
         let sequence = state.cache().sequence();
         let size = state.cache().len();
 
         if size > 0 {
-            if payload.len() > 0 {
+            if !payload.is_empty() {
                 // Double RTO
                 state.double_rto();
 
@@ -532,7 +525,7 @@ impl Forwarder {
         // Delayed ACK0
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         if state.delayed_ack() {
             self.send_tcp_ack_0(dst, src)?;
         }
@@ -545,7 +538,7 @@ impl Forwarder {
         // Retransmit unhandled SYN
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         if state.cache_syn().is_some() {
             return self.send_tcp_ack_syn(dst, src);
         }
@@ -553,7 +546,7 @@ impl Forwarder {
         if state.src_window() > 0 {
             // TCP sequence
             let sent_size = state.cache().len();
-            let remain_size = state.send_window().checked_sub(sent_size).unwrap_or(0);
+            let remain_size = state.send_window().saturating_sub(sent_size);
             let remain_size = min(remain_size, u16::MAX as usize) as u16;
 
             let mut size = min(remain_size as usize, state.queue().len());
@@ -570,7 +563,7 @@ impl Forwarder {
             if size > 0 {
                 let state = self
                     .get_state_mut(dst, src)
-                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                 let payload = state.append_cache(size)?;
 
                 // If the queue is empty and a FIN is in the queue, pop it
@@ -581,14 +574,14 @@ impl Forwarder {
                     // Send
                     let state = self
                         .get_state(dst, src)
-                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
                     self.send_tcp_ack(dst, src, sequence, &payload, true)?;
                 } else {
                     // ACK
                     let state = self
                         .get_state(dst, src)
-                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                     let sequence = state.sequence();
                     self.send_tcp_ack(dst, src, sequence, &payload, false)?;
                 }
@@ -599,7 +592,8 @@ impl Forwarder {
         // FIN
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        #[allow(clippy::collapsible_if)]
         if state.queue_fin() {
             if state.cache().is_empty() {
                 // FIN
@@ -628,7 +622,7 @@ impl Forwarder {
         while mss * i < payload.len() {
             let state = self
                 .get_state(dst, src)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             let size = min(mss, payload.len() - i * mss);
             let payload = &payload[i * mss..i * mss + size];
             let sequence = sequence
@@ -666,8 +660,8 @@ impl Forwarder {
 
             // Send
             self.send_ipv4(
-                dst.ip().clone(),
-                src.ip().clone(),
+                *dst.ip(),
+                *src.ip(),
                 Layers::Tcp(tcp),
                 Some(payload),
             )?;
@@ -675,7 +669,7 @@ impl Forwarder {
             // Clear TCP delayed ACK
             let state = self
                 .get_state_mut(dst, src)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             state.clear_delayed_ack();
 
             // Update TCP sequence
@@ -687,7 +681,7 @@ impl Forwarder {
                 state.add_sequence(sub_sequence);
             }
 
-            i = i + 1;
+            i += 1;
         }
 
         Ok(())
@@ -698,7 +692,7 @@ impl Forwarder {
         if ENABLE_DELAYED_ACK {
             let state = self
                 .get_state_mut(dst, src)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
             if state.delayed_ack() {
                 self.send_tcp_ack_0(dst, src)?;
@@ -717,7 +711,7 @@ impl Forwarder {
         // TCP
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack(
             dst.port(),
             src.port(),
@@ -729,12 +723,12 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)?;
 
         // Clear TCP delayed ACK
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         state.clear_delayed_ack();
 
         Ok(())
@@ -758,7 +752,7 @@ impl Forwarder {
         // TCP
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack_syn(
             dst.port(),
             src.port(),
@@ -772,12 +766,12 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)?;
 
         // Clear TCP delayed ACK
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         state.clear_delayed_ack();
 
         Ok(())
@@ -788,7 +782,7 @@ impl Forwarder {
         // TCP
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_ack_rst(
             dst.port(),
             src.port(),
@@ -799,12 +793,12 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)?;
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)?;
 
         // Clear TCP delayed ACK
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         state.clear_delayed_ack();
 
         Ok(())
@@ -821,7 +815,7 @@ impl Forwarder {
         let tcp = Tcp::new_ack_rst(dst.port(), src.port(), sequence, 0, 0, None);
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)
     }
 
     /// Sends an TCP RST packet.
@@ -835,14 +829,14 @@ impl Forwarder {
         let tcp = Tcp::new_rst(dst.port(), src.port(), sequence, 0, 0, None);
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)
     }
 
     fn send_tcp_fin(&mut self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<()> {
         // TCP
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let tcp = Tcp::new_fin(
             dst.port(),
             src.port(),
@@ -853,7 +847,7 @@ impl Forwarder {
         );
 
         // Send
-        self.send_ipv4(dst.ip().clone(), src.ip().clone(), Layers::Tcp(tcp), None)
+        self.send_ipv4(*dst.ip(), *src.ip(), Layers::Tcp(tcp), None)
     }
 
     /// Sends UDP packets.
@@ -867,8 +861,8 @@ impl Forwarder {
         let udp = Udp::new(dst.port(), src.port());
 
         self.send_ipv4(
-            dst.ip().clone(),
-            src.ip().clone(),
+            *dst.ip(),
+            *src.ip(),
             Layers::Udp(udp),
             Some(payload),
         )
@@ -882,7 +876,7 @@ impl Forwarder {
         payload: Option<&[u8]>,
     ) -> io::Result<()> {
         // Fragmentation
-        let size = &transport.len()
+        let size = transport.len()
             + match payload {
                 Some(payload) => payload.len(),
                 None => 0,
@@ -957,7 +951,7 @@ impl Forwarder {
 
                 // Leave at least 8 Bytes for last fragment
                 if remain > 0 && remain < 8 {
-                    length = length - 8;
+                    length -= 8;
                 }
 
                 // IPv4
@@ -1097,7 +1091,7 @@ impl ForwardStream for Forwarder {
 
         let state = self
             .get_state_mut(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         state.update_syn_timer();
 
         Ok(())
@@ -1106,7 +1100,7 @@ impl ForwardStream for Forwarder {
     fn forward(&mut self, dst: SocketAddrV4, src: SocketAddrV4, payload: &[u8]) -> io::Result<()> {
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         if state.cache_fin().is_some() || state.queue_fin() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
@@ -1131,7 +1125,7 @@ impl ForwardStream for Forwarder {
     fn check(&self, dst: SocketAddrV4, src: SocketAddrV4) -> io::Result<usize> {
         let state = self
             .get_state(dst, src)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         Ok(state.queue_remaining())
     }
 }
@@ -1142,6 +1136,7 @@ impl ForwardDatagram for Forwarder {
     }
 }
 
+#[allow(clippy::unnecessary_lazy_evaluations)]
 fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
     let size_main = main
         .1
@@ -1157,12 +1152,14 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
         .unwrap_or_else(|| sub.1 + (u32::MAX - main.1)) as usize;
     let mut vector = Vec::with_capacity(2);
 
+    #[allow(clippy::collapsible_if)]
     if diff_first <= MAX_U32_WINDOW_SIZE {
         if diff_second > MAX_U32_WINDOW_SIZE {
             // sub is in the main
             vector.push((main.0, sub.0));
             vector.push((sub.1, main.1));
         } else {
+            #[allow(clippy::collapsible_if)]
             if diff_first >= size_main {
                 // sub is in the right of the main
                 vector.push((main.0, main.1));
@@ -1172,6 +1169,7 @@ fn disjoint_u32_range(main: (u32, u32), sub: (u32, u32)) -> Vec<(u32, u32)> {
             }
         }
     } else {
+        #[allow(clippy::collapsible_if)]
         if diff_second > MAX_U32_WINDOW_SIZE {
             // The distance between the main's left edge and the sub's right edge
             let diff = sub
@@ -1239,14 +1237,8 @@ impl Redirector {
         proxy: ProxyConfig,
         traffic: Option<Traffic>,
     ) -> Redirector {
-        let size = match &traffic {
-            Some(traffic) => Some(traffic.size()),
-            None => None,
-        };
-        let count = match &traffic {
-            Some(traffic) => Some(traffic.count()),
-            None => None,
-        };
+        let size = traffic.as_ref().map(|traffic| traffic.size());
+        let count = traffic.as_ref().map(|traffic| traffic.count());
         let redirector = Redirector {
             tx,
             tx_src_hardware_addr_set_ip_addr_set: HashSet::new(),
@@ -1385,12 +1377,13 @@ impl Redirector {
                     if let Some(transport) = transport {
                         match transport {
                             Layers::Icmpv4(ref icmpv4) => self.handle_icmpv4(icmpv4)?,
-                            Layers::Tcp(ref tcp) => self.handle_tcp(tcp, &payload).await?,
-                            Layers::Udp(ref udp) => self.handle_udp(udp, &payload).await?,
+                            Layers::Tcp(ref tcp) => self.handle_tcp(tcp, payload).await?,
+                            Layers::Udp(ref udp) => self.handle_udp(udp, payload).await?,
                             _ => unreachable!(),
                         }
                     }
                 } else {
+                    #[allow(clippy::collapsible_if)]
                     if let Some(transport) = indicator.transport() {
                         match transport {
                             Layers::Icmpv4(icmpv4) => self.handle_icmpv4(icmpv4)?,
@@ -1427,6 +1420,7 @@ impl Redirector {
                 Some(kind) => kind,
                 None => return Ok(()),
             };
+            #[allow(clippy::single_match)]
             match kind {
                 LayerKinds::Udp => {
                     let dst = icmpv4.dst().unwrap();
@@ -1483,7 +1477,7 @@ impl Redirector {
             let state = self
                 .states
                 .get_mut(&key)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             if tcp.sequence() != state.recv_next() {
                 trace!(
                     "TCP out of order of {} -> {} at {}",
@@ -1496,13 +1490,13 @@ impl Redirector {
                 let mut tx_locked = self.tx.lock().unwrap();
                 let tx_state = tx_locked
                     .get_state_mut(dst, src)
-                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
                 tx_state.acknowledge(tcp.acknowledgement());
                 tx_state.set_src_window((tcp.window() as usize) << state.wscale() as usize);
             }
 
-            if payload.len() > 0 {
+            if !payload.is_empty() {
                 // ACK
                 if is_writable {
                     // Append to cache
@@ -1515,7 +1509,7 @@ impl Redirector {
                             .lock()
                             .unwrap()
                             .get_state_mut(dst, src)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?
+                            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
                             .set_sacks(&sacks);
                     }
 
@@ -1525,7 +1519,7 @@ impl Redirector {
                             let stream = self
                                 .streams
                                 .get_mut(&key)
-                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                             let size = payload.len();
                             match stream.send(payload) {
                                 Ok(_) => {
@@ -1538,7 +1532,7 @@ impl Redirector {
                                     let mut tx_locked = self.tx.lock().unwrap();
                                     let tx_state = tx_locked
                                         .get_state_mut(dst, src)
-                                        .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
                                     // Update window size
                                     tx_state.set_window(cache_remaining_size);
@@ -1570,7 +1564,7 @@ impl Redirector {
                             let mut tx_locked = self.tx.lock().unwrap();
                             let tx_state = tx_locked
                                 .get_state_mut(dst, src)
-                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
                             tx_state.set_window(cache_remaining_size);
 
@@ -1611,7 +1605,7 @@ impl Redirector {
                             let mut is_sr = false;
                             if state.sack_perm() {
                                 if let Some(sacks) = tcp.sack() {
-                                    if sacks.len() > 0 {
+                                    if !sacks.is_empty() {
                                         // Selective retransmission
                                         self.tx.lock().unwrap().retransmit_tcp(
                                             dst,
@@ -1668,10 +1662,7 @@ impl Redirector {
                 true => tcp.wscale(),
                 false => None,
             };
-            let recv_wscale = match wscale {
-                Some(wscale) => Some(min(wscale, MAX_RECV_WSCALE)),
-                None => None,
-            };
+            let recv_wscale = wscale.map(|wscale| min(wscale, MAX_RECV_WSCALE));
             let sack_perm = ENABLE_SACK && tcp.is_sack_perm();
             let state = TcpRxState::new(src, dst, tcp.sequence(), wscale.unwrap_or(0), sack_perm);
 
@@ -1713,7 +1704,7 @@ impl Redirector {
                         let mut tx_locked = self.tx.lock().unwrap();
                         let tx_state = tx_locked
                             .get_state_mut(dst, src)
-                            .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
                         tx_state.add_acknowledgement(1);
 
@@ -1776,7 +1767,7 @@ impl Redirector {
                 let state = self
                     .states
                     .get_mut(&key)
-                    .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                 if tcp.is_fin() {
                     // Update FIN sequence
                     state.set_fin_sequence(
@@ -1797,7 +1788,7 @@ impl Redirector {
                             let mut tx_locked = self.tx.lock().unwrap();
                             let tx_state = tx_locked
                                 .get_state_mut(dst, src)
-                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
                             tx_state.add_acknowledgement(1);
 
@@ -1809,7 +1800,7 @@ impl Redirector {
                             let stream = self
                                 .streams
                                 .get_mut(&key)
-                                .ok_or(io::Error::from(io::ErrorKind::NotFound))?;
+                                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
                             stream.shutdown(Shutdown::Write);
                         } else {
                             // Close by remote
@@ -1824,7 +1815,7 @@ impl Redirector {
                             tcp.sequence()
                         );
 
-                        if payload.len() == 0 {
+                        if payload.is_empty() {
                             // Send ACK0
                             self.tx.lock().unwrap().send_tcp_ack_0(dst, src)?;
                         }
@@ -1864,7 +1855,7 @@ impl Redirector {
         // Send
         self.datagrams
             .get_mut(&port)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))?
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
             .send_to(
                 payload.to_vec(),
                 SocketAddrV4::new(udp.dst_ip_addr(), udp.dst()),
@@ -1915,11 +1906,11 @@ impl Redirector {
                             // Reuse
                             self.datagram_map.remove(&prev_src);
                             trace!("reuse UDP port {} = {} to {}", port, prev_src, src);
-                            self.datagram_map.insert(src.clone(), port);
+                            self.datagram_map.insert(src, port);
                             self.datagrams.get_mut(&port).unwrap().set_src(&src);
 
                             // Update LRU
-                            self.udp_lru.put(port, src.clone());
+                            self.udp_lru.put(port, src);
 
                             Ok(port)
                         }
@@ -1931,15 +1922,12 @@ impl Redirector {
 
     fn unbind_local_udp_port(&mut self, src: SocketAddrV4) {
         let local_port = self.datagram_map.get(&src);
-        match local_port {
-            Some(&local_port) => {
-                self.datagrams.remove(&local_port);
-                self.udp_lru.pop(&local_port);
-                self.datagram_map.remove(&src);
+        if let Some(&local_port) = local_port {
+            self.datagrams.remove(&local_port);
+            self.udp_lru.pop(&local_port);
+            self.datagram_map.remove(&src);
 
-                trace!("unbind UDP port {} = {}", local_port, src);
-            }
-            None => {}
+            trace!("unbind UDP port {} = {}", local_port, src);
         }
     }
 
